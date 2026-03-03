@@ -10,15 +10,18 @@ import os
 
 st.set_page_config(page_title="Control Geovita", layout="wide")
 
+# URL del Excel
 FILE_ID = "1E9zKZGSaU8RIfiZLe8UXszgsde9V7WEf"
 URL_DRIVE = f"https://docs.google.com/spreadsheets/d/{FILE_ID}/export?format=xlsx"
 
-@st.cache_data(ttl=60) # Bajamos el tiempo de cache para ver cambios rápido
+@st.cache_data(ttl=60)
 def cargar_datos(url):
     try:
-        r = requests.get(url)
+        r = requests.get(url, timeout=10)
         return BytesIO(r.content)
-    except: return None
+    except Exception as e:
+        st.error(f"Error de conexión: {e}")
+        return None
 
 def extraer_hm(v):
     if isinstance(v, (time, datetime)): return v.hour, v.minute
@@ -29,7 +32,7 @@ def extraer_hm(v):
         except: return None, None
     return None, None
 
-st.title("📊 Control Geovita - Diagnóstico")
+st.title("📊 Panel de Control Geovita")
 
 archivo = cargar_datos(URL_DRIVE)
 
@@ -38,7 +41,7 @@ if archivo:
         wb = openpyxl.load_workbook(archivo, data_only=True)
         ws = wb.active
         
-        # --- DIAGNÓSTICO: ¿Qué hay en la fila 2? ---
+        # 1. Detectar fechas en Fila 2
         fechas = {}
         for c in range(3, 100, 2):
             val = ws.cell(row=2, column=c).value
@@ -47,60 +50,57 @@ if archivo:
                 fechas[f_txt] = c
         
         if not fechas:
-            st.error("❌ No se encontraron fechas en la fila 2. Revisa tu Excel.")
+            st.error("No se encontraron fechas en la Fila 2 del Excel.")
+            st.info("Asegúrate de que las fechas empiecen desde la columna C.")
         else:
             f_sel = st.sidebar.selectbox("Seleccione Fecha:", list(fechas.keys()))
             c_idx = fechas[f_sel]
             
-            # --- DIAGNÓSTICO: Ver datos crudos ---
-            datos_encontrados = []
+            # 2. Extraer Tareas
+            tareas = []
             f_ref = datetime(2024, 1, 15)
             
             for r in range(3, ws.max_row + 1):
                 indicador = str(ws.cell(row=r, column=1).value).strip().lower()
                 if indicador == 'inicio':
-                    tarea = str(ws.cell(row=r, column=2).value)
+                    nombre = str(ws.cell(row=r, column=2).value)
                     h_i, m_i = extraer_hm(ws.cell(row=r, column=c_idx).value)
                     h_f, m_f = extraer_hm(ws.cell(row=r+1, column=c_idx).value)
                     
                     if h_i is not None:
-                        # Lógica de horas...
-                        d_i = f_ref + timedelta(hours=h_i, minutes=m_i)
-                        if h_i < 8: d_i += timedelta(days=1)
-                        d_f = f_ref + timedelta(hours=h_f, minutes=m_f)
-                        if h_f < 8: d_f += timedelta(days=1)
-                        if d_f <= d_i: d_f += timedelta(days=1)
+                        dt_i = f_ref + timedelta(hours=h_i, minutes=m_i)
+                        if h_i < 8: dt_i += timedelta(days=1)
+                        dt_f = f_ref + timedelta(hours=h_f, minutes=m_f)
+                        if h_f < 8: dt_f += timedelta(days=1)
+                        if dt_f <= dt_i: dt_f += timedelta(days=1)
                         
-                        datos_encontrados.append({'Tarea': tarea, 'Inicio': d_i, 'Fin': d_f})
+                        tareas.append({'Tarea': nombre, 'Inicio': dt_i, 'Fin': dt_f})
 
-            if not datos_encontrados:
-                st.warning(f"⚠️ Se encontró la fecha {f_sel}, pero NO hay filas con la palabra 'inicio' en la Columna A que tengan horas válidas.")
-                # Mostramos una tabla de lo que hay en la columna A para ayudar al usuario
-                st.write("Contenido detectado en Columna A (primeras 10 filas):")
-                st.write([str(ws.cell(row=i, column=1).value) for i in range(3, 13)])
-            else:
-                # SI HAY DATOS, DIBUJAMOS
-                fig, ax = plt.subplots(figsize=(16, 8))
+            # 3. Mostrar Gráfico o Datos
+            if tareas:
+                fig, ax = plt.subplots(figsize=(16, 7))
                 fig.patch.set_facecolor("#0F0F0F")
                 ax.set_facecolor("#0F0F0F")
-                
-                # Logo (opcional, no bloquea)
-                if os.path.exists("logo_geovita.png"):
-                    try:
-                        img = plt.imread("logo_geovita.png")
-                        fig.figimage(img, xo=100, yo=100, alpha=0.1)
-                    except: pass
 
-                for d in datos_encontrados:
-                    ax.barh(0, (d['Fin'] - d['Inicio']), left=d['Inicio'], height=2, color="#00FFFF", edgecolor="white")
-                    ax.text(d['Inicio'], 2.5, d['Tarea'], color="white", fontsize=9)
+                for t in tareas:
+                    ax.barh(0, (t['Fin'] - t['Inicio']), left=t['Inicio'], height=2, color="#00FFFF", edgecolor="white")
+                    ax.text(t['Inicio'], 1.2, t['Tarea'], color="white", fontsize=8)
 
-                ax.set_xlim(f_ref + timedelta(hours=7.5), f_ref + timedelta(hours=32.5))
                 ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+                ax.set_xlim(f_ref + timedelta(hours=7.5), f_ref + timedelta(hours=32.5))
                 plt.xticks(color="white")
                 plt.yticks([])
                 st.pyplot(fig)
-                st.success(f"✅ Se cargaron {len(datos_encontrados)} tareas correctamente.")
+                
+                # Mostrar tabla abajo para verificar
+                st.write("### Resumen de Tareas Detectadas")
+                st.table(pd.DataFrame(tareas))
+            else:
+                st.warning(f"No hay tareas con la palabra 'inicio' en la Columna A para la fecha {f_sel}.")
+                st.write("Primeras 5 filas de la Columna A encontradas:")
+                st.write([str(ws.cell(row=i, column=1).value) for i in range(3, 8)])
 
     except Exception as e:
-        st.error(f"Hubo un problema al leer el Excel: {e}")
+        st.error(f"Error al leer Excel: {e}")
+else:
+    st.error("No se pudo descargar el archivo de Drive. Verifica los permisos de compartir.")
